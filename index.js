@@ -1,3 +1,13 @@
+import express from 'express';
+import pptxgen from 'pptxgenjs';
+
+const app = express();
+app.use(express.json());
+
+app.get('/', (req, res) => {
+  res.send('PptxGenJS API is running!');
+});
+
 app.post('/generate', async (req, res) => {
   const { slides } = req.body;
 
@@ -10,7 +20,7 @@ app.post('/generate', async (req, res) => {
   slides.forEach(slideData => {
     const slide = pres.addSlide();
 
-    // Add the slide title
+    // Title at the top
     slide.addText(slideData.title, {
       x: 0.5,
       y: 0.3,
@@ -18,15 +28,14 @@ app.post('/generate', async (req, res) => {
       bold: true
     });
 
-    // Flatten all text.value fields from objects[]
+    // Extract and flatten text.value from all objects[]
     const bodyText = slideData.objects
       .map(obj => obj.text?.value || '')
-      .join('\n') // combine all text blocks
-      .split('\n') // turn into array of bullet points
+      .join('\n')                   // combine multiline strings
+      .split('\n')                  // turn into bullets
       .map(line => line.trim())
-      .filter(line => line.length > 0); // remove empty lines
+      .filter(line => line.length > 0);  // skip empty lines
 
-    // Add as bullets (if there's anything to show)
     if (bodyText.length > 0) {
       slide.addText(bodyText, {
         x: 0.7,
@@ -39,8 +48,18 @@ app.post('/generate', async (req, res) => {
     }
   });
 
-  const buffer = await pres.stream();
-  res.setHeader('Content-Disposition', 'attachment; filename="presentation.pptx"');
-  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
-  res.send(buffer);
+  try {
+    const buffer = await pres.stream();
+    res.setHeader('Content-Disposition', 'attachment; filename="presentation.pptx"');
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
+    res.send(buffer);
+  } catch (err) {
+    console.error('Error generating PPTX:', err);
+    res.status(500).json({ error: 'Failed to generate presentation' });
+  }
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });
