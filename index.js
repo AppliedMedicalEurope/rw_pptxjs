@@ -5,87 +5,246 @@ const compression = require('compression');
 const rateLimit = require('express-rate-limit');
 const multer = require('multer');
 const sharp = require('sharp');
-const Jimp = require('jimp');
-const fetch = require('node-fetch');
+const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
 const PptxGenJS = require('pptxgenjs');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware
-app.use(helmet({
-  contentSecurityPolicy: false
-}));
-app.use(compression());
-app.use(cors());
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+// Handle graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received, shutting down gracefully');
+  process.exit(0);
+});
 
-// Rate limiting
+process.on('SIGINT', () => {
+  console.log('SIGINT received, shutting down gracefully');
+  process.exit(0);
+});
+
+// Middleware with Railway-specific configurations
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrc: ["'self'"],
+      imgSrc: ["'self'", "data:", "https:"],
+    },
+  },
+  crossOriginEmbedderPolicy: false
+}));
+
+app.use(compression());
+app.use(cors({
+  origin: process.env.NODE_ENV === 'production' ? 
+    [/\.railway\.app$/, /localhost/] : 
+    true,
+  credentials: true
+}));
+
+app.use(express.json({ 
+  limit: '10mb',
+  verify: (req, res, buf) => {
+    try {
+      JSON.parse(buf);
+    } catch (e) {
+      res.status(400).json({ error: 'Invalid JSON' });
+      return;
+    }
+  }
+}));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Rate limiting - more conservative for Railway
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // limit each IP to 100 requests per windowMs
-  message: 'Too many requests from this IP'
+  max: 50, // reduced limit for Railway
+  message: { error: 'Too many requests from this IP, please try again later' },
+  standardHeaders: true,
+  legacyHeaders: false
 });
 app.use('/api/', limiter);
 
-// Multer for file uploads
+// Multer for file uploads - reduced limits for Railway
 const storage = multer.memoryStorage();
 const upload = multer({ 
   storage: storage,
-  limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
+  limits: { 
+    fileSize: 5 * 1024 * 1024, // 5MB limit
+    files: 1
+  },
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+    if (allowedTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid file type. Only JPEG, PNG, GIF, and WebP are allowed.'));
+    }
+  }
 });
 
-// Helper function to process images
+// Helper function to process images with better error handling
 async function processImage(buffer, options = {}) {
   try {
-    let processedBuffer;
+    if (!buffer || buffer.length === 0) {
+      throw new Error('Invalid image buffer');
+    }
+
+    let processedBuffer = buffer;
     
-    if (options.resize) {
+    if (options.resize && options.resize.width && options.resize.height) {
       const { width, height } = options.resize;
       processedBuffer = await sharp(buffer)
-        .resize(width, height, { fit: 'inside' })
-        .jpeg({ quality: 90 })
+        .resize(Math.min(width, 1920), Math.min(height, 1080), { 
+          fit: 'inside',
+          withoutEnlargement: true
+        })
+        .jpeg({ quality: 85, progressive: true })
         .toBuffer();
     } else {
-      processedBuffer = buffer;
+      // Convert to JPEG if not already
+      processedBuffer = await sharp(buffer)
+        .jpeg({ quality: 85, progressive: true })
+        .toBuffer();
     }
     
     return `data:image/jpeg;base64,${processedBuffer.toString('base64')}`;
   } catch (error) {
     console.error('Image processing error:', error);
-    throw error;
+    throw new Error('Failed to process image: ' + error.message);
+  }
+}
+
+// Helper function to fetch images from URL with timeout
+async function fetchImageFromUrl(url, timeout = 10000) {
+  try {
+    const response = await axios.get(url, {
+      responseType: 'arraybuffer',
+      timeout: timeout,
+      maxContentLength: 5 * 1024 * 1024, // 5MB limit
+      headers: {
+        'User-Agent': 'PptxGenJS-API/1.0'
+      }
+    });
+    
+    return Buffer.from(response.data);
+  } catch (error) {
+    console.error('Error fetching image from URL:', error);
+    throw new Error('Failed to fetch image from URL: ' + error.message);
   }
 }
 
 // Health check endpoint
 app.get('/health', (req, res) => {
-  res.json({ status: 'healthy', timestamp: new Date().toISOString() });
-});
-
-// Root endpoint with API documentation
-app.get('/', (req, res) => {
-  res.json({
-    message: 'PptxGenJS API Server',
-    version: '1.0.0',
-    endpoints: {
-      'GET /health': 'Health check',
-      'POST /api/presentation/create': 'Create a basic presentation',
-      'POST /api/presentation/advanced': 'Create advanced presentation with all features',
-      'POST /api/slide/add-text': 'Add text to presentation',
-      'POST /api/slide/add-image': 'Add image to presentation',
-      'POST /api/slide/add-chart': 'Add chart to presentation',
-      'POST /api/slide/add-table': 'Add table to presentation',
-      'POST /api/slide/add-shape': 'Add shape to presentation',
-      'POST /api/presentation/template': 'Create presentation from template',
-      'POST /api/presentation/bulk': 'Create multiple presentations',
-      'POST /api/presentation/merge': 'Merge multiple presentations'
-    }
+  res.status(200).json({ 
+    status: 'healthy', 
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    memory: process.memoryUsage(),
+    env: process.env.NODE_ENV || 'development'
   });
 });
 
-// Create basic presentation
+// Root endpoint
+app.get('/', (req, res) => {
+  res.status(200).json({
+    message: 'PptxGenJS API Server - Railway Deployment',
+    version: '1.0.0',
+    status: 'running',
+    endpoints: {
+      'GET /health': 'Health check',
+      'POST /api/presentation/simple': 'Create a simple presentation (recommended)',
+      'POST /api/presentation/create': 'Create a basic presentation',
+      'POST /api/slide/text': 'Add text slide',
+      'POST /api/slide/image': 'Add image slide'
+    },
+    documentation: 'Send POST requests with JSON data to create presentations'
+  });
+});
+
+// Simple presentation endpoint - Railway optimized
+app.post('/api/presentation/simple', async (req, res) => {
+  try {
+    const { 
+      title = 'My Presentation',
+      slides = [],
+      author = 'API User'
+    } = req.body;
+
+    console.log('Creating simple presentation:', { title, slideCount: slides.length });
+    
+    const pptx = new PptxGenJS();
+    
+    // Basic settings
+    pptx.author = author;
+    pptx.title = title;
+    pptx.layout = 'LAYOUT_16x9';
+    
+    // Title slide
+    const titleSlide = pptx.addSlide();
+    titleSlide.addText(title, {
+      x: 1,
+      y: 2.5,
+      w: 8,
+      h: 1.5,
+      fontSize: 28,
+      bold: true,
+      color: '363636',
+      align: 'center'
+    });
+    
+    // Content slides
+    slides.forEach((slideData, index) => {
+      try {
+        const slide = pptx.addSlide();
+        
+        if (slideData.title) {
+          slide.addText(slideData.title, {
+            x: 0.5,
+            y: 0.5,
+            w: 9,
+            h: 1,
+            fontSize: 20,
+            bold: true,
+            color: '1f4e79'
+          });
+        }
+        
+        if (slideData.content) {
+          slide.addText(slideData.content, {
+            x: 0.5,
+            y: slideData.title ? 1.5 : 0.5,
+            w: 9,
+            h: slideData.title ? 4.5 : 5.5,
+            fontSize: 14,
+            color: '444444'
+          });
+        }
+      } catch (slideError) {
+        console.warn(`Error processing slide ${index}:`, slideError);
+      }
+    });
+    
+    console.log('Generating PPTX buffer...');
+    const buffer = await pptx.write({ outputType: 'nodebuffer' });
+    console.log('PPTX generated successfully, size:', buffer.length);
+    
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(title)}.pptx"`);
+    res.setHeader('Content-Length', buffer.length);
+    res.send(buffer);
+    
+  } catch (error) {
+    console.error('Error creating simple presentation:', error);
+    res.status(500).json({ 
+      error: 'Failed to create presentation', 
+      message: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
 app.post('/api/presentation/create', async (req, res) => {
   try {
     const { title = 'My Presentation', slides = [] } = req.body;
@@ -310,7 +469,105 @@ app.post('/api/presentation/advanced', async (req, res) => {
   }
 });
 
-// Add text slide
+// Add simple text slide
+app.post('/api/slide/text', async (req, res) => {
+  try {
+    const { 
+      title = 'Text Slide',
+      text = 'Sample text content',
+      options = {}
+    } = req.body;
+    
+    const pptx = new PptxGenJS();
+    const slide = pptx.addSlide();
+    
+    // Add title
+    slide.addText(title, {
+      x: 0.5,
+      y: 0.5,
+      w: 9,
+      h: 1,
+      fontSize: 20,
+      bold: true,
+      color: '1f4e79'
+    });
+    
+    // Add content
+    slide.addText(text, {
+      x: 0.5,
+      y: 1.5,
+      w: 9,
+      h: 4,
+      fontSize: options.fontSize || 14,
+      color: options.color || '444444',
+      align: options.align || 'left',
+      bold: options.bold || false,
+      italic: options.italic || false
+    });
+    
+    const buffer = await pptx.write({ outputType: 'nodebuffer' });
+    
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
+    res.setHeader('Content-Disposition', 'attachment; filename="text-slide.pptx"');
+    res.send(buffer);
+    
+  } catch (error) {
+    console.error('Error creating text slide:', error);
+    res.status(500).json({ error: 'Failed to create text slide', message: error.message });
+  }
+});
+
+// Add simple image slide
+app.post('/api/slide/image', upload.single('image'), async (req, res) => {
+  try {
+    const { title = 'Image Slide', options = {} } = req.body;
+    let imageData;
+    
+    if (req.file) {
+      imageData = await processImage(req.file.buffer, options);
+    } else if (req.body.imageUrl) {
+      const response = await fetch(req.body.imageUrl);
+      const buffer = await response.buffer();
+      imageData = await processImage(buffer, options);
+    } else {
+      return res.status(400).json({ error: 'No image provided. Send file or imageUrl.' });
+    }
+    
+    const pptx = new PptxGenJS();
+    const slide = pptx.addSlide();
+    
+    // Add title
+    slide.addText(title, {
+      x: 0.5,
+      y: 0.5,
+      w: 9,
+      h: 0.8,
+      fontSize: 20,
+      bold: true,
+      color: '1f4e79'
+    });
+    
+    // Add image
+    slide.addImage({
+      data: imageData,
+      x: 1.5,
+      y: 1.5,
+      w: 7,
+      h: 4,
+      sizing: { type: 'contain', w: 7, h: 4 }
+    });
+    
+    const buffer = await pptx.write({ outputType: 'nodebuffer' });
+    
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
+    res.setHeader('Content-Disposition', 'attachment; filename="image-slide.pptx"');
+    res.send(buffer);
+    
+  } catch (error) {
+    console.error('Error creating image slide:', error);
+    res.status(500).json({ error: 'Failed to create image slide', message: error.message });
+  }
+});
 app.post('/api/slide/add-text', async (req, res) => {
   try {
     const { text, options = {} } = req.body;
@@ -654,24 +911,62 @@ app.post('/api/presentation/template', async (req, res) => {
   }
 });
 
-// Error handling middleware
+// Global error handler
 app.use((error, req, res, next) => {
-  console.error('Unhandled error:', error);
+  console.error('Unhandled error:', {
+    message: error.message,
+    stack: error.stack,
+    url: req.url,
+    method: req.method,
+    timestamp: new Date().toISOString()
+  });
+  
+  // Handle specific error types
+  if (error.code === 'LIMIT_FILE_SIZE') {
+    return res.status(413).json({ error: 'File too large', maxSize: '5MB' });
+  }
+  
+  if (error.code === 'LIMIT_UNEXPECTED_FILE') {
+    return res.status(400).json({ error: 'Unexpected file field' });
+  }
+  
+  if (error.message.includes('Invalid file type')) {
+    return res.status(400).json({ error: error.message });
+  }
+  
   res.status(500).json({ 
     error: 'Internal server error',
-    details: process.env.NODE_ENV === 'development' ? error.message : 'Something went wrong'
+    message: process.env.NODE_ENV === 'development' ? error.message : 'Something went wrong',
+    timestamp: new Date().toISOString()
   });
 });
 
 // 404 handler
 app.use((req, res) => {
-  res.status(404).json({ error: 'Endpoint not found' });
+  res.status(404).json({ 
+    error: 'Endpoint not found',
+    path: req.path,
+    method: req.method,
+    availableEndpoints: ['/', '/health', '/api/presentation/simple', '/api/slide/text', '/api/slide/image']
+  });
 });
 
-app.listen(PORT, () => {
-  console.log(`PptxGenJS API Server running on port ${PORT}`);
-  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`Health check: http://localhost:${PORT}/health`);
+// Start server
+const server = app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 PptxGenJS API Server running on port ${PORT}`);
+  console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🔗 Health check: http://localhost:${PORT}/health`);
+  console.log(`📋 API docs: http://localhost:${PORT}/`);
+});
+
+// Handle server errors
+server.on('error', (error) => {
+  if (error.code === 'EADDRINUSE') {
+    console.error(`❌ Port ${PORT} is already in use`);
+  } else {
+    console.error('❌ Server error:', error);
+  }
+  process.exit(1);
 });
 
 module.exports = app;
