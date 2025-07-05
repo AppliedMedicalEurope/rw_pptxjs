@@ -164,6 +164,218 @@ app.get('/', (req, res) => {
   });
 });
 
+
+// Add this new endpoint to your Express.js server to handle the JSON structure properly
+
+app.post('/api/presentation/from-json', async (req, res) => {
+  try {
+    const { slides = [] } = req.body;
+    
+    console.log('Processing presentation with', slides.length, 'slides');
+    
+    const pptx = new PptxGenJS();
+    pptx.author = 'JSON Converter';
+    pptx.title = 'Converted Presentation';
+    pptx.layout = 'LAYOUT_16x9';
+    
+    // Process each slide from the JSON structure
+    slides.forEach((slideData, slideIndex) => {
+      try {
+        const slide = pptx.addSlide();
+        console.log(`Processing slide ${slideIndex + 1} with ${slideData.objects?.length || 0} objects`);
+        
+        // Process each object on the slide
+        if (slideData.objects && Array.isArray(slideData.objects)) {
+          slideData.objects.forEach((obj, objIndex) => {
+            try {
+              // Handle background rectangles
+              if (obj.rect) {
+                const rect = obj.rect;
+                const x = typeof rect.x === 'string' && rect.x.includes('%') ? 0 : (parseFloat(rect.x) || 0);
+                const y = typeof rect.y === 'string' && rect.y.includes('%') ? 0 : (parseFloat(rect.y) || 0);
+                const w = typeof rect.w === 'string' && rect.w.includes('%') ? 10 : (parseFloat(rect.w) || 10);
+                const h = typeof rect.h === 'string' && rect.h.includes('%') ? 7.5 : (parseFloat(rect.h) || 7.5);
+                
+                // Set slide background if this is a full-width background
+                if (x === 0 && y === 0 && (w >= 10 || rect.w === '100%')) {
+                  slide.background = { color: rect.fill?.color || 'FFFFFF' };
+                } else {
+                  // Add as a shape
+                  slide.addShape('RECTANGLE', {
+                    x: x,
+                    y: y,
+                    w: w,
+                    h: h,
+                    fill: { color: rect.fill?.color || 'FFFFFF' },
+                    line: { width: 0 }
+                  });
+                }
+              }
+              
+              // Handle text elements
+              if (obj.text) {
+                const textObj = obj.text;
+                const options = textObj.options || {};
+                
+                slide.addText(textObj.text || '', {
+                  x: parseFloat(options.x) || 0.5,
+                  y: parseFloat(options.y) || 0.5,
+                  w: parseFloat(options.w) || 9,
+                  h: parseFloat(options.h) || 1,
+                  fontSize: parseInt(options.fontSize) || 16,
+                  fontFace: options.fontFace || 'Arial',
+                  color: options.color || '000000',
+                  bold: options.bold || false,
+                  italic: options.italic || false,
+                  underline: options.underline || false,
+                  align: options.align || 'left',
+                  valign: options.valign || 'top',
+                  rotate: parseInt(options.rotate) || 0
+                });
+              }
+              
+              // Handle shape elements
+              if (obj.shape) {
+                const shape = obj.shape;
+                const options = shape.options || {};
+                
+                slide.addShape(shape.type?.toUpperCase() || 'RECTANGLE', {
+                  x: parseFloat(options.x) || 1,
+                  y: parseFloat(options.y) || 1,
+                  w: parseFloat(options.w) || 2,
+                  h: parseFloat(options.h) || 2,
+                  fill: options.fill || { color: '0066CC' },
+                  line: options.line || { color: '000000', width: 1 },
+                  rotate: parseInt(options.rotate) || 0
+                });
+              }
+              
+              // Handle line elements
+              if (obj.line) {
+                const line = obj.line;
+                const options = line.options || {};
+                
+                slide.addShape('LINE', {
+                  x: parseFloat(options.x1) || parseFloat(options.x) || 1,
+                  y: parseFloat(options.y1) || parseFloat(options.y) || 1,
+                  w: Math.abs(parseFloat(options.x2) - parseFloat(options.x1)) || 2,
+                  h: Math.abs(parseFloat(options.y2) - parseFloat(options.y1)) || 0.1,
+                  line: options.line || { color: '000000', width: 2 }
+                });
+              }
+              
+            } catch (objError) {
+              console.warn(`Error processing object ${objIndex} on slide ${slideIndex}:`, objError.message);
+            }
+          });
+        }
+        
+      } catch (slideError) {
+        console.error(`Error processing slide ${slideIndex}:`, slideError.message);
+        // Add a simple error slide
+        const errorSlide = pptx.addSlide();
+        errorSlide.addText(`Error on Slide ${slideIndex + 1}`, {
+          x: 1, y: 1, w: 8, h: 1,
+          fontSize: 20, color: 'FF0000', bold: true
+        });
+        errorSlide.addText(`${slideError.message}`, {
+          x: 1, y: 2, w: 8, h: 4,
+          fontSize: 14, color: '666666'
+        });
+      }
+    });
+    
+    console.log('Generating PPTX buffer...');
+    const buffer = await pptx.write({ outputType: 'nodebuffer' });
+    console.log('PPTX generated successfully, size:', buffer.length);
+    
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
+    res.setHeader('Content-Disposition', 'attachment; filename="converted-presentation.pptx"');
+    res.setHeader('Content-Length', buffer.length);
+    res.send(buffer);
+    
+  } catch (error) {
+    console.error('Error creating presentation from JSON:', error);
+    res.status(500).json({
+      error: 'Failed to create presentation',
+      message: error.message,
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Helper endpoint to validate JSON structure
+app.post('/api/presentation/validate-json', (req, res) => {
+  try {
+    const { slides } = req.body;
+    
+    if (!slides || !Array.isArray(slides)) {
+      return res.status(400).json({
+        valid: false,
+        error: 'Missing or invalid slides array'
+      });
+    }
+    
+    const validation = {
+      valid: true,
+      slideCount: slides.length,
+      slides: []
+    };
+    
+    slides.forEach((slide, index) => {
+      const slideValidation = {
+        slideNumber: slide.slideNumber || index + 1,
+        objectCount: slide.objects?.length || 0,
+        objects: []
+      };
+      
+      if (slide.objects && Array.isArray(slide.objects)) {
+        slide.objects.forEach((obj, objIndex) => {
+          const objValidation = {
+            index: objIndex,
+            type: obj.rect ? 'rectangle' : obj.text ? 'text' : obj.shape ? 'shape' : obj.line ? 'line' : 'unknown',
+            valid: true,
+            issues: []
+          };
+          
+          // Validate text objects
+          if (obj.text) {
+            if (!obj.text.text) {
+              objValidation.issues.push('Missing text content');
+            }
+            if (!obj.text.options) {
+              objValidation.issues.push('Missing text options');
+            }
+          }
+          
+          // Validate rect objects
+          if (obj.rect) {
+            if (obj.rect.x === undefined || obj.rect.y === undefined) {
+              objValidation.issues.push('Missing position (x, y)');
+            }
+            if (obj.rect.w === undefined || obj.rect.h === undefined) {
+              objValidation.issues.push('Missing dimensions (w, h)');
+            }
+          }
+          
+          objValidation.valid = objValidation.issues.length === 0;
+          slideValidation.objects.push(objValidation);
+        });
+      }
+      
+      validation.slides.push(slideValidation);
+    });
+    
+    res.json(validation);
+    
+  } catch (error) {
+    res.status(500).json({
+      valid: false,
+      error: error.message
+    });
+  }
+});
 // Simple presentation endpoint - Railway optimized
 app.post('/api/presentation/simple', async (req, res) => {
   try {
