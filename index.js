@@ -8,7 +8,7 @@ app.post('/generate', async (req, res) => {
   const { slides } = req.body;
 
   if (!slides || !Array.isArray(slides)) {
-    return res.status(400).json({ error: 'Missing or invalid slides array' });
+    return res.status(400).json({ error: 'Invalid input' });
   }
 
   const pres = new pptxgen();
@@ -17,31 +17,30 @@ app.post('/generate', async (req, res) => {
     const slide = pres.addSlide();
     slide.addText(slideData.title, { x: 0.5, y: 0.3, fontSize: 24, bold: true });
 
-    const allText = slideData.objects
+    const bullets = slideData.objects
       .map(obj => obj.text?.value || '')
       .join('\n')
-      .split('\n') // for bullets
+      .split('\n')
       .map(line => line.trim())
-      .filter(line => line.length > 0);
+      .filter(Boolean);
 
-    // Add bullets below the title
-    slide.addText(allText, {
+    slide.addText(bullets, {
       x: 0.5,
       y: 1.2,
       fontSize: 18,
       bullet: true,
-      color: '363636',
       lineSpacingMultiple: 1.2
     });
   });
 
   const buffer = await pres.stream();
 
+  res.setHeader('Content-Disposition', 'attachment; filename="slides.pptx"');
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
-  res.setHeader('Content-Disposition', 'attachment; filename="presentation.pptx"');
   res.send(buffer);
 });
 
-app.listen(process.env.PORT || 3000, () => {
-  console.log('Server is running');
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });
