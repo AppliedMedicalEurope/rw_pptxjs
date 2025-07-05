@@ -1,11 +1,3 @@
-import express from 'express';
-import pptxgen from 'pptxgenjs';
-
-const app = express();
-const PORT = process.env.PORT || 3000;
-
-app.use(express.json());
-
 app.post('/generate', async (req, res) => {
   const { slides } = req.body;
 
@@ -15,29 +7,40 @@ app.post('/generate', async (req, res) => {
 
   const pres = new pptxgen();
 
-  slides.forEach(({ title, bullets }) => {
+  slides.forEach(slideData => {
     const slide = pres.addSlide();
-    slide.addText(title || 'No Title', { x: 1, y: 0.5, fontSize: 24, bold: true });
-    if (bullets && Array.isArray(bullets)) {
-      slide.addText(bullets.join('\n'), { x: 1, y: 1.5, fontSize: 18 });
+
+    // Add the slide title
+    slide.addText(slideData.title, {
+      x: 0.5,
+      y: 0.3,
+      fontSize: 24,
+      bold: true
+    });
+
+    // Flatten all text.value fields from objects[]
+    const bodyText = slideData.objects
+      .map(obj => obj.text?.value || '')
+      .join('\n') // combine all text blocks
+      .split('\n') // turn into array of bullet points
+      .map(line => line.trim())
+      .filter(line => line.length > 0); // remove empty lines
+
+    // Add as bullets (if there's anything to show)
+    if (bodyText.length > 0) {
+      slide.addText(bodyText, {
+        x: 0.7,
+        y: 1.2,
+        fontSize: 18,
+        bullet: true,
+        color: '363636',
+        lineSpacingMultiple: 1.2
+      });
     }
   });
 
-  try {
-    const buffer = await pres.stream(); // Get PPTX as Buffer
-    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
-    res.setHeader('Content-Disposition', 'attachment; filename="presentation.pptx"');
-    res.send(buffer);
-  } catch (err) {
-    console.error('Error generating PPTX:', err);
-    res.status(500).json({ error: 'Failed to generate presentation' });
-  }
-});
-
-app.get('/', (req, res) => {
-  res.send('PPTXGenJS PowerPoint API is running!');
-});
-
-app.listen(PORT, () => {
-  console.log(`Server is listening on port ${PORT}`);
+  const buffer = await pres.stream();
+  res.setHeader('Content-Disposition', 'attachment; filename="presentation.pptx"');
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
+  res.send(buffer);
 });
