@@ -1,14 +1,17 @@
 const express = require('express');
 const bodyParser = require('body-parser');
 const PptxGenJS = require('pptxgenjs');
-const fs = require('fs');
-const path = require('path');
 
 const app = express();
-const port = 3000;
+const port = process.env.PORT || 3000;
 
-// Parse JSON payloads
+// Middleware
 app.use(bodyParser.json({ limit: '10mb' }));
+
+// Health check
+app.get('/', (req, res) => {
+  res.send('🚀 PPTXGenJS API is running on Railway!');
+});
 
 // Helper to apply slide content
 function applySlideContent(slide, elements) {
@@ -40,12 +43,12 @@ function applySlideContent(slide, elements) {
   });
 }
 
+// Main route
 app.post('/generate-pptx', async (req, res) => {
   try {
     const { slides = [], layout } = req.body;
 
     const pptx = new PptxGenJS();
-
     if (layout) {
       pptx.layout = layout;
     }
@@ -57,23 +60,19 @@ app.post('/generate-pptx', async (req, res) => {
       }
     });
 
-    const tmpFilePath = path.join(__dirname, `presentation-${Date.now()}.pptx`);
+    const base64 = await pptx.write('base64');
 
-    // Save and send the file
-    await pptx.writeFile({ fileName: tmpFilePath });
-
-    res.download(tmpFilePath, 'presentation.pptx', err => {
-      fs.unlink(tmpFilePath, () => {}); // Clean up temp file
-      if (err) {
-        console.error('Download error:', err);
-      }
-    });
+    const fileBuffer = Buffer.from(base64, 'base64');
+    res.setHeader('Content-Disposition', 'attachment; filename=presentation.pptx');
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
+    res.send(fileBuffer);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Failed to generate presentation' });
+    console.error('Error generating PPTX:', err);
+    res.status(500).json({ error: 'Failed to generate presentation', details: err.message });
   }
 });
 
-app.listen(port, () => {
-  console.log(`PPTXGenJS API listening at http://localhost:${port}`);
+// Start the server on 0.0.0.0 for Railway
+app.listen(port, '0.0.0.0', () => {
+  console.log(`🚀 PPTXGenJS API listening on http://0.0.0.0:${port}`);
 });
