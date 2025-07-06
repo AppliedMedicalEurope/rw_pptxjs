@@ -14,27 +14,64 @@ app.get('/', (req, res) => {
 function applySlideContent(slide, objects) {
   objects.forEach((obj, idx) => {
     try {
+      // Case 1: Single text block
       if (obj.text && typeof obj.text.text === 'string') {
         slide.addText(obj.text.text, obj.text.options || {});
-      } else if (obj.text && Array.isArray(obj.text)) {
-        const paragraphs = obj.text.map(t => ({
-          text: t.text,
-          options: t.options || {}
-        }));
+      }
+
+      // Case 2: Paragraph array
+      else if (obj.text && Array.isArray(obj.text)) {
+        const isBullet = obj.options?.bullet === true;
+
+        const paragraphs = obj.text.map(t => {
+          let cleanText = t.text?.trim() || '';
+          if (isBullet && cleanText.startsWith('•')) {
+            cleanText = cleanText.slice(1).trim();
+          }
+
+          return {
+            text: cleanText,
+            options: {
+              ...t.options,
+              bullet: isBullet || t.options?.bullet === true
+            }
+          };
+        });
+
         slide.addText(paragraphs, obj.options || {});
-      } else if (obj.table && obj.table.rows) {
+      }
+
+      // Case 3: Table
+      else if (obj.table && obj.table.rows) {
         slide.addTable(obj.table.rows, obj.options || {});
-      } else if (obj.image) {
+      }
+
+      // Case 4: Image
+      else if (obj.image) {
         slide.addImage(obj.image);
-      } else if (obj.rect) {
+      }
+
+      // Case 5: Rect
+      else if (obj.rect) {
         slide.addShape('rect', obj.rect);
-      } else if (obj.shape && obj.shape.type) {
+      }
+
+      // Case 6: Shape
+      else if (obj.shape && obj.shape.type) {
         slide.addShape(obj.shape.type, obj.shape.options || {});
-      } else if (obj.chart && obj.chart.type && obj.chart.data) {
+      }
+
+      // Case 7: Chart
+      else if (obj.chart && obj.chart.type && obj.chart.data) {
         slide.addChart(obj.chart.type, obj.chart.data, obj.chart.options || {});
-      } else if (obj.media) {
+      }
+
+      // Case 8: Media
+      else if (obj.media) {
         slide.addMedia(obj.media);
-      } else {
+      }
+
+      else {
         console.warn(`⚠️ Unknown object at index ${idx}:`, obj);
       }
     } catch (err) {
@@ -49,7 +86,7 @@ app.post('/generate-pptx', async (req, res) => {
 
     const pptx = new PptxGenJS();
 
-    // Only apply valid layout settings
+    // Optional global layout
     if (layout && layout.startsWith('LAYOUT_')) {
       pptx.layout = layout;
     }
@@ -57,7 +94,7 @@ app.post('/generate-pptx', async (req, res) => {
     slides.forEach((slideData, idx) => {
       const slide = pptx.addSlide();
 
-      // Convert background.color → fill
+      // Fix background
       if (slideData.background) {
         if (slideData.background.color) {
           slide.background = { fill: slideData.background.color };
@@ -66,13 +103,13 @@ app.post('/generate-pptx', async (req, res) => {
         }
       }
 
-      // Optional slide notes
+      // Slide notes
       if (slideData.notes) {
         slideData.options = slideData.options || {};
         slideData.options.notes = slideData.notes;
       }
 
-      // Render objects
+      // Render content
       if (Array.isArray(slideData.objects)) {
         applySlideContent(slide, slideData.objects);
       } else {
