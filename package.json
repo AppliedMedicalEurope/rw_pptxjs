@@ -2,7 +2,7 @@
   "name": "pptxgenjs-api",
   "version": "1.0.0",
   "description": "An Express API to generate PowerPoint files using PptxGenJS",
-  "main": "server.js",
+  "main": "index.js",
   "scripts": {
     "start": "node server.js"
   },
