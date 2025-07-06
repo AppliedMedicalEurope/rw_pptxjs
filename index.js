@@ -7,18 +7,20 @@ const port = process.env.PORT || 3000;
 
 app.use(bodyParser.json({ limit: '10mb' }));
 
+// Health check
 app.get('/', (req, res) => {
   res.send('✅ PPTXGenJS API is running');
 });
 
+// Slide content renderer
 function applySlideContent(slide, objects) {
   objects.forEach((obj, idx) => {
     try {
       if (obj.text && typeof obj.text.text === 'string') {
-        // obj.text: { text: string, options: {} }
+        // single text block
         slide.addText(obj.text.text, obj.text.options || {});
       } else if (obj.text && Array.isArray(obj.text)) {
-        // obj.text: [ { text, options } ]
+        // multiple paragraph segments
         const paragraphs = obj.text.map(t => ({
           text: t.text,
           options: t.options || {}
@@ -32,15 +34,20 @@ function applySlideContent(slide, objects) {
         slide.addShape('rect', obj.rect);
       } else if (obj.shape && obj.shape.type) {
         slide.addShape(obj.shape.type, obj.shape.options || {});
+      } else if (obj.chart && obj.chart.type && obj.chart.data) {
+        slide.addChart(obj.chart.type, obj.chart.data, obj.chart.options || {});
+      } else if (obj.media) {
+        slide.addMedia(obj.media);
       } else {
-        console.warn(`⚠️ Unknown object at index ${idx}`, obj);
+        console.warn(`⚠️ Unknown or unsupported object at index ${idx}`, obj);
       }
     } catch (err) {
-      console.error(`❌ Error rendering object ${idx}:`, err.message);
+      console.error(`❌ Error rendering object at index ${idx}:`, err.message);
     }
   });
 }
 
+// Main PPTX generation route
 app.post('/generate-pptx', async (req, res) => {
   try {
     const { slides = [], layout } = req.body;
@@ -50,17 +57,29 @@ app.post('/generate-pptx', async (req, res) => {
 
     slides.forEach((slideData, idx) => {
       const slide = pptx.addSlide();
-      if (slideData.background) slide.background = { fill: slideData.background };
 
+      // Background
+      if (slideData.background) {
+        slide.background = { fill: slideData.background };
+      }
+
+      // Slide notes
+      if (slideData.notes) {
+        slideData.options = slideData.options || {};
+        slideData.options.notes = slideData.notes;
+      }
+
+      // Objects
       if (Array.isArray(slideData.objects)) {
         applySlideContent(slide, slideData.objects);
       } else {
-        console.warn(`⚠️ Slide ${idx} missing objects`);
+        console.warn(`⚠️ Slide ${idx} missing or invalid 'objects' array.`);
       }
     });
 
     const base64 = await pptx.write('base64');
     const fileBuffer = Buffer.from(base64, 'base64');
+
     res.setHeader('Content-Disposition', 'attachment; filename=presentation.pptx');
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
     res.send(fileBuffer);
