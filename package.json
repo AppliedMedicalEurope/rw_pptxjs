@@ -4,7 +4,7 @@
   "description": "An Express API to generate PowerPoint files using PptxGenJS",
   "main": "index.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node index.js"
   },
   "author": "Your Name",
   "license": "MIT",
