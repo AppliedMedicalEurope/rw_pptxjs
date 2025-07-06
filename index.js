@@ -1,134 +1,97 @@
 const express = require('express');
 const bodyParser = require('body-parser');
-const PptxGenJS = require('pptxgenjs');
+const PPTX = require('pptxgenjs');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
-const port = process.env.PORT || 3000;
-
 app.use(bodyParser.json({ limit: '10mb' }));
 
-app.get('/', (req, res) => {
-  res.send('✅ PPTXGenJS API is running');
-});
+// Utility to parse percentage or absolute values
+function parsePos(val, total = 10) {
+  if (typeof val === 'string' && val.endsWith('%')) {
+    return (parseFloat(val) / 100) * total;
+  }
+  return parseFloat(val);
+}
 
-function applySlideContent(slide, objects) {
-  objects.forEach((obj, idx) => {
-    try {
-      // Case 1: Single text block
-      if (obj.text && typeof obj.text.text === 'string') {
-        slide.addText(obj.text.text, obj.text.options || {});
-      }
+function applyElement(slide, element) {
+  if (element.text) {
+    const paragraphs = element.text.map(p => ({
+      text: p.text,
+      options: p.options || {}
+    }));
 
-      // Case 2: Paragraph array
-      else if (obj.text && Array.isArray(obj.text)) {
-        const isBullet = obj.options?.bullet === true;
+    const options = {
+      x: parsePos(element.options?.x || 0),
+      y: parsePos(element.options?.y || 0),
+      w: parsePos(element.options?.w || 10),
+      h: parsePos(element.options?.h || 1),
+      align: element.options?.align || 'left',
+      bullet: element.options?.bullet || false,
+      ...element.options
+    };
 
-        const paragraphs = obj.text.map(t => {
-          let cleanText = t.text?.trim() || '';
-          if (isBullet && cleanText.startsWith('•')) {
-            cleanText = cleanText.slice(1).trim();
-          }
+    slide.addText(paragraphs, options);
+  } else if (element.table) {
+    const rows = element.table.rows.map(row =>
+      row.map(cell => cell.text || "")
+    );
+    const cellOptions = element.table.rows.map(row =>
+      row.map(cell => cell.options || {})
+    );
 
-          return {
-            text: cleanText,
-            options: {
-              ...t.options,
-              bullet: isBullet || t.options?.bullet === true
-            }
-          };
-        });
+    const options = {
+      x: parsePos(element.options?.x || 1),
+      y: parsePos(element.options?.y || 1),
+      w: parsePos(element.options?.w || 8),
+      h: parsePos(element.options?.h || 5),
+      ...element.options
+    };
 
-        slide.addText(paragraphs, obj.options || {});
-      }
-
-      // Case 3: Table
-      else if (obj.table && obj.table.rows) {
-        slide.addTable(obj.table.rows, obj.options || {});
-      }
-
-      // Case 4: Image
-      else if (obj.image) {
-        slide.addImage(obj.image);
-      }
-
-      // Case 5: Rect
-      else if (obj.rect) {
-        slide.addShape('rect', obj.rect);
-      }
-
-      // Case 6: Shape
-      else if (obj.shape && obj.shape.type) {
-        slide.addShape(obj.shape.type, obj.shape.options || {});
-      }
-
-      // Case 7: Chart
-      else if (obj.chart && obj.chart.type && obj.chart.data) {
-        slide.addChart(obj.chart.type, obj.chart.data, obj.chart.options || {});
-      }
-
-      // Case 8: Media
-      else if (obj.media) {
-        slide.addMedia(obj.media);
-      }
-
-      else {
-        console.warn(`⚠️ Unknown object at index ${idx}:`, obj);
-      }
-    } catch (err) {
-      console.error(`❌ Error rendering object at index ${idx}:`, err.message);
-    }
-  });
+    slide.addTable(rows, { ...options, cellOpts: cellOptions });
+  }
+  // You can add other types like images, charts here
 }
 
 app.post('/generate-pptx', async (req, res) => {
   try {
-    const { slides = [], layout } = req.body;
+    const input = req.body;
+    const pptx = new PPTX();
 
-    const pptx = new PptxGenJS();
+    if (input.title) pptx.author = input.title;
+    if (input.author) pptx.author = input.author;
+    if (input.subject) pptx.subject = input.subject;
 
-    // Optional global layout
-    if (layout && layout.startsWith('LAYOUT_')) {
-      pptx.layout = layout;
-    }
-
-    slides.forEach((slideData, idx) => {
+    input.slides.forEach(slideData => {
       const slide = pptx.addSlide();
 
-      // Fix background
-      if (slideData.background) {
-        if (slideData.background.color) {
-          slide.background = { fill: slideData.background.color };
-        } else {
-          slide.background = slideData.background;
-        }
+      if (slideData.options?.bkgd || slideData.background?.color) {
+        slide.background = {
+          fill: slideData.options?.bkgd || slideData.background?.color
+        };
       }
 
-      // Slide notes
-      if (slideData.notes) {
-        slideData.options = slideData.options || {};
-        slideData.options.notes = slideData.notes;
-      }
-
-      // Render content
-      if (Array.isArray(slideData.objects)) {
-        applySlideContent(slide, slideData.objects);
-      } else {
-        console.warn(`⚠️ Slide ${idx} missing or invalid 'objects' array.`);
-      }
+      const elements = slideData.elements || slideData.objects || [];
+      elements.forEach(el => applyElement(slide, el));
     });
 
-    const base64 = await pptx.write('base64');
-    const fileBuffer = Buffer.from(base64, 'base64');
+    const fileName = `generated-${Date.now()}.pptx`;
+    const filePath = path.join('/tmp', fileName);
+    await pptx.writeFile({ fileName: filePath });
 
-    res.setHeader('Content-Disposition', 'attachment; filename=presentation.pptx');
-    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
-    res.send(fileBuffer);
+    res.download(filePath, 'presentation.pptx', err => {
+      if (err) console.error('Download error:', err);
+      fs.unlink(filePath, () => {});
+    });
   } catch (err) {
-    console.error('❌ Error generating PPTX:', err);
-    res.status(500).json({ error: 'Failed to generate presentation', details: err.message });
+    console.error('Error generating PPTX:', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
-app.listen(port, '0.0.0.0', () => {
-  console.log(`🚀 PPTXGenJS API listening on http://0.0.0.0:${port}`);
-});
+// ✅ Port binding for Railway & local
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, '0.0.0.0', () =>
+  console.log(`PPTXGenJS API running on http://0.0.0.0:${PORT}`)
+);
