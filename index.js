@@ -7,20 +7,16 @@ const port = process.env.PORT || 3000;
 
 app.use(bodyParser.json({ limit: '10mb' }));
 
-// Health check
 app.get('/', (req, res) => {
   res.send('✅ PPTXGenJS API is running');
 });
 
-// Slide content renderer
 function applySlideContent(slide, objects) {
   objects.forEach((obj, idx) => {
     try {
       if (obj.text && typeof obj.text.text === 'string') {
-        // single text block
         slide.addText(obj.text.text, obj.text.options || {});
       } else if (obj.text && Array.isArray(obj.text)) {
-        // multiple paragraph segments
         const paragraphs = obj.text.map(t => ({
           text: t.text,
           options: t.options || {}
@@ -39,7 +35,7 @@ function applySlideContent(slide, objects) {
       } else if (obj.media) {
         slide.addMedia(obj.media);
       } else {
-        console.warn(`⚠️ Unknown or unsupported object at index ${idx}`, obj);
+        console.warn(`⚠️ Unknown object at index ${idx}:`, obj);
       }
     } catch (err) {
       console.error(`❌ Error rendering object at index ${idx}:`, err.message);
@@ -47,29 +43,36 @@ function applySlideContent(slide, objects) {
   });
 }
 
-// Main PPTX generation route
 app.post('/generate-pptx', async (req, res) => {
   try {
     const { slides = [], layout } = req.body;
 
     const pptx = new PptxGenJS();
-    if (layout) pptx.layout = layout;
+
+    // Only apply valid layout settings
+    if (layout && layout.startsWith('LAYOUT_')) {
+      pptx.layout = layout;
+    }
 
     slides.forEach((slideData, idx) => {
       const slide = pptx.addSlide();
 
-      // Background
+      // Convert background.color → fill
       if (slideData.background) {
-        slide.background = { fill: slideData.background };
+        if (slideData.background.color) {
+          slide.background = { fill: slideData.background.color };
+        } else {
+          slide.background = slideData.background;
+        }
       }
 
-      // Slide notes
+      // Optional slide notes
       if (slideData.notes) {
         slideData.options = slideData.options || {};
         slideData.options.notes = slideData.notes;
       }
 
-      // Objects
+      // Render objects
       if (Array.isArray(slideData.objects)) {
         applySlideContent(slide, slideData.objects);
       } else {
