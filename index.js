@@ -14,12 +14,17 @@ app.get('/', (req, res) => {
 function applySlideContent(slide, objects) {
   objects.forEach((obj, idx) => {
     try {
-      // Case 1: Single text block
-      if (obj.text && typeof obj.text.text === 'string') {
+      // Case 1: Simple text string (most common title format)
+      if (typeof obj.text === 'string') {
+        slide.addText(obj.text, obj.options || {});
+      }
+
+      // Case 2: Rich text block (single object with nested text/options)
+      else if (obj.text && typeof obj.text.text === 'string') {
         slide.addText(obj.text.text, obj.text.options || {});
       }
 
-      // Case 2: Paragraph array
+      // Case 3: Paragraph array (used for bullet lists or mixed formatting)
       else if (obj.text && Array.isArray(obj.text)) {
         const isBullet = obj.options?.bullet === true;
 
@@ -41,36 +46,37 @@ function applySlideContent(slide, objects) {
         slide.addText(paragraphs, obj.options || {});
       }
 
-      // Case 3: Table
+      // Case 4: Table
       else if (obj.table && obj.table.rows) {
         slide.addTable(obj.table.rows, obj.options || {});
       }
 
-      // Case 4: Image
+      // Case 5: Image
       else if (obj.image) {
         slide.addImage(obj.image);
       }
 
-      // Case 5: Rect
+      // Case 6: Rect
       else if (obj.rect) {
         slide.addShape('rect', obj.rect);
       }
 
-      // Case 6: Shape
+      // Case 7: Shape
       else if (obj.shape && obj.shape.type) {
         slide.addShape(obj.shape.type, obj.shape.options || {});
       }
 
-      // Case 7: Chart
+      // Case 8: Chart
       else if (obj.chart && obj.chart.type && obj.chart.data) {
         slide.addChart(obj.chart.type, obj.chart.data, obj.chart.options || {});
       }
 
-      // Case 8: Media
+      // Case 9: Media
       else if (obj.media) {
         slide.addMedia(obj.media);
       }
 
+      // Fallback
       else {
         console.warn(`⚠️ Unknown object at index ${idx}:`, obj);
       }
@@ -94,7 +100,7 @@ app.post('/generate-pptx', async (req, res) => {
     slides.forEach((slideData, idx) => {
       const slide = pptx.addSlide();
 
-      // Fix background
+      // Set background color or image
       if (slideData.background) {
         if (slideData.background.color) {
           slide.background = { fill: slideData.background.color };
@@ -103,13 +109,13 @@ app.post('/generate-pptx', async (req, res) => {
         }
       }
 
-      // Slide notes
+      // Slide notes (optional)
       if (slideData.notes) {
         slideData.options = slideData.options || {};
         slideData.options.notes = slideData.notes;
       }
 
-      // Render content
+      // Slide objects
       if (Array.isArray(slideData.objects)) {
         applySlideContent(slide, slideData.objects);
       } else {
